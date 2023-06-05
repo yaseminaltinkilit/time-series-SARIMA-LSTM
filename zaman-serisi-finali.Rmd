@@ -1,0 +1,571 @@
+---
+---
+---
+
+## Giriş
+
+**Amaç:**
+
+Aylık olarak sonraki zaman birimlerinde (periyod =3) dağıtılacak elektriği tahmin etmek ve planlamaya katkı sağlamaktır.
+
+**Veri Açıklaması:**
+Veri seti Gediz Elektrik Kaggle Yarışması'nda kullanılan veri setinden alınan bir bölümdür. İzmir ve Manisa illerinde saatlik yapılan elektrik dağılımlarını içerir. Dağılımlar aylık bazda toplam alınarak aggregate edilmiştir. Dağıtılan Enerji'nin %85'i İzmir, %15'i ise Manisa için gerçekleştirilmektedir. Veride illere göre bir ayrım yoktur, ikisinin toplamını temsil eder.
+
+**Yazarlar:**
+
+2022900075 - yaseminaltinkilit\@gmail.com
+
+2022900082 - sengulkaraderili\@gmail.com
+
+
+```{r include=FALSE}
+#install.packages("readr")
+#install.packages("tidyr")
+#install.packages("ggplot2")
+```
+
+```{r include=FALSE}
+# Keras ve Tensorflow kütüphanelerini yükleyin
+#install.packages("keras")
+#install.packages("tensorflow")
+library(keras)
+library(tensorflow)
+```
+
+```{r pressure, include=FALSE}
+library(tidyr)
+library(readr)
+library(ggplot2)
+```
+
+```{r include=FALSE}
+#install ggplot2
+#install.packages("ggplot2")
+
+#load ggplot2
+library(ggplot2)
+```
+
+```{r include=FALSE}
+#install.packages("magrittr") # package installations are only needed the first time you use it
+# install.packages("dplyr")    # alternative installation of the %>%
+library(magrittr) # needs to be run every time you start R and want to use %>%
+library(dplyr)    # alternatively, this also loads %>%
+# library(xts)
+
+```
+
+```{r include=FALSE}
+# library(keras)
+# library(tensorflow)
+use_condaenv("r-reticulate")
+# install_tensorflow()
+
+require(devtools)
+# install_github("rstudio/reticulate")
+# install_github("rstudio/tensorflow")
+# install_github("rstudio/keras")
+
+library(keras)
+# install_keras()
+```
+
+## Veriyi Yükle
+
+```{r include=FALSE}
+df = read.csv("train.csv")
+```
+
+Daha kolay çalışmak için sürunları yeniden isimlendiriyorum. ds tarihi, y ise o tarihte dağıtılan enejiyi ifade ediyor.
+
+```{r}
+colnames(df) <- c("ds","y")
+```
+
+```{r echo=FALSE}
+head(df)
+```
+
+## Veri Analizi
+
+Verinin özetine bakalım, ds değeri karater, bunu tarih formatına çevireceğiz. Boxplota baktığımızda upper outlier sayılabilecek yüksek değerler olsa da çarpık dağılım söz konusu değildir.
+
+```{r echo=FALSE}
+summary(df)
+```
+
+```{r echo=FALSE}
+ggplot(df,                   
+       aes(x = y)) +
+  geom_boxplot()
+```
+
+Eksik değer bulunmuyor.
+
+```{r}
+colSums(is.na(df)) 
+```
+
+```{r}
+if (anyNA(df)) {
+  print("Eksik değerler var.")
+} else {
+  print("Eksik değer yok.")
+}
+```
+
+```{r}
+df$ds <- as.Date(df$ds)
+```
+
+```{r}
+ggplot(df , aes(x =ds, y = y)) + geom_line()
+```
+
+```{r echo=FALSE}
+library("lubridate")
+library("dplyr")
+```
+
+Tahminleri aylık bazda yapmak istediğimiz için aylık bazda y'nin toplamını alarak veriyi aggregate ettik.
+
+```{r}
+
+df = df %>%
+  mutate(ds = floor_date(ds, unit = "month")) %>%
+  group_by(ds) %>%
+  summarise(y = sum(y, na.rm = TRUE))
+                                                 
+```
+
+Verideki ilk gün 2018 Ocak ayını temsilen 2018-01-01, son gün 2022-07-01.
+
+```{r echo=FALSE}
+summary(df)
+```
+
+```{r}
+ggplot(df , aes(x =ds, y = y)) + geom_line()
+```
+
+**Decomposition**
+
+Yıl içinde aynı dalgalanma her sene görüldüğü için mevsimsellik var ve veri seti randomluk barındırıyor.Veri seti durağan değildir.
+
+Veri setinde yükselen trend görünüyor. Artan trend ile birlikte dalgaların şiddeti de arttığı için çarpımsal bir modeldir diyoruz.
+
+```{r}
+decomp = decompose(ts(df$y,frequency = 12))
+plot(decomp)
+```
+
+**Train- test seti ayırma**
+
+İlk 52 gözlemi eğitim için ayırıp son 3 gözlemi tahmin için ayırıyoruz.
+
+```{r}
+train_set_arima = head(df, n = 52)
+test_set_arima = tail(df, n = 3)
+test_set_arima
+```
+
+```{r}
+# Veri setininin türünü ts yapıyoruz.
+df_ts = ts(train_set_arima$y, frequency = 12, start =c(2018,1))
+```
+
+**1 normal fark alma (lag=1)**
+
+Veriyi durağanlaştırmak için 1 fark aldık ve trend ortadan kalktı. Hala mevsimsellik etkisi görünüyor.
+
+```{r}
+diff1 = diff(df_ts, 1)
+plot.ts(diff1)
+
+```
+
+**Mevsimsel fark alma (lag=12)**
+
+12 fark aldığımızda mevsimselliğin düzeni bozuldu.
+
+```{r}
+diff12 = diff(df_ts, 12)
+plot.ts(diff12)
+
+```
+
+**1 normal 1 mevsimsel fark alma (lag=1) (lag=12)**
+
+1 normal fark ve 1 mevsimsel fark (12) aldığımızda 2021 Ağustos gibi bir etki görünüyor ancak onun dışında mevsimsellik ortadan kalkmıştır. Emin olmak için orokorelasyonlarını çizdireceğiz.
+
+```{r}
+diff_1_12 = diff(diff1, 12)
+plot.ts(diff_1_12)
+```
+
+**Mevsimsel fark alınan veri setinde ACF / PACF**
+
+Sadece mevsimsel fark alınarak oluşturulan ACF plota baktığımızda seasonal açıdan 12. 24. ve 36. adımda kendini tekrarlamış. PACF ise cut off olmuyor.
+
+```{r}
+acf(diff12, lag.max =50)
+```
+
+```{r}
+pacf(diff12, lag.max =50)
+
+```
+
+**Mevsimsel ve normal fark alınan veri setinde ACF / PACF**
+
+1 normal fark 1 mevsimsel (12) fark alarak ACF plota baktığımızda birinci dışında dokuzuncuya (L-3) kadar anlamlı otokorelasyon bulunmuyor. (non seasonal)
+
+Seasonal kısmına baktığımızda ACF 1.0 noktasından 2.0 noktasına cutt off olmuş.
+
+```{r}
+acf(diff_1_12, lag.max =50)
+```
+
+PACF'ye baktığımızda 3'den sonra cut off olmuş, non seasonal kısım durağan diyebiliriz.
+
+Seasonal açıdan baktığımızda PACF durağan gözüküyor.
+
+```{r}
+pacf(diff_1_12, lag.max =50)
+```
+
+**Stationary test**
+
+Durağanlıktan emin olmak için ADF test yapıyoruz. Bu testten geçtiği için 1 normal 1 mevsimsel fark alınmış veriyle devam ediyoruz.
+
+```{r echo=FALSE}
+library(tseries)
+adf.test(diff_1_12)
+```
+
+## ARIMA Uygulaması
+
+Yapılan denemeler sonucunda (p,d,q) (P,D,Q) değerleri sırasıyla (1,1,1)(0,1,1) olacak şekilde ayarlanmıştır.
+
+```{r}
+ts_model = arima(diff_1_12,  order = c(1, 1, 1), seasonal = list(order = c(0, 1, 1), period = 12))
+ts_model
+```
+
+**Coef Test**
+
+Model parametrelelerinin anlamlılığını test edelim.
+
+```{r echo=FALSE}
+library(lmtest)
+coeftest(ts_model)
+```
+
+-   2021 Ağustos ve 2021 başında bir dalgalanma görünüyor. Bu modeli kötü etkilemeyebilir.
+-   ACF'ye residuallara baktığımızda mavi çizgiyi aşan yok.
+-   p-value'ların hespi çizginin üzerinde olduğu için modeli kabul edebilizi gibi görünüyor.
+
+```{r echo=FALSE}
+tsdiag(ts_model)
+```
+
+*H0 : Otokorelasyın yok.*
+
+*HI: Otokorelasyon var.*
+
+Box teste baktığımızda lag 6,12,24,36 p valuelarının hepsi 0.05'den büyük olduğu için hepsi anlamlı çıkıyor.
+
+```{r}
+Box.test(ts_model$residuals, lag = 6)
+```
+
+```{r}
+Box.test(ts_model$residuals, lag = 12)
+
+```
+
+```{r}
+Box.test(ts_model$residuals, lag = 24)
+
+```
+
+```{r}
+Box.test(ts_model$residuals, lag = 36)
+
+```
+
+Otokorelasyon olup olmadığını görmek için checkresiduals ile kontrol ediyoruz. ACF'de sınırda çok hafif bir taşma olsa da, box teste göre p value 0.092 (0.05'den büyük) olarak çıktığı için kabul edilebilir görünüyor ve dağılım normal görünüyor.
+
+```{r}
+library("forecast")
+
+checkresiduals(ts_model)
+```
+
+**Auto ARIMA ile Karşılaştırma**
+
+Deneyerek belirlediğimiz ve bulduğumuz en iyi model ile auto arimadan çıkan en iyi modeli karşılaştıralım.
+
+```{r}
+auto_model <- auto.arima(diff_1_12)
+print(auto_model)
+```
+
+```{r}
+ts_model
+# ARIMA(1, 1, 1)(0, 1, 1)
+```
+
+Modelimizin AIC değeri Auto ARIMA modelini AIC değerinden ddaha küçük, log likelihood ise daha büyük olduğu için oluşturduğumuz model ile devam edeceğiz.
+
+**Prediction**
+
+3 aylık zaman periyodu için tahmin yapalım.
+
+```{r}
+library('forecast')
+pred_arima = forecast(ts_model, h=3)
+plot(pred_arima)
+```
+
+**Metriklerin bulunması**
+
+```{r}
+point_pred <- pred_arima[4]$mean
+
+# RMSE değeri: 
+rmse_arima = sqrt(mean((test_set_arima$y - point_pred)^2))
+# R2 Değeri:
+r2_arima = (cor(test_set_arima$y , point_pred)[1])^2 %>% round (4)
+
+```
+
+## LSTM Uygulaması
+
+**Veri normalizasyonu**
+
+Veriyi scale etmek için fonksiyonlarımızı hazırlıyoruz.
+
+```{r}
+get_scaling_factors <- function(data){
+  out <- c(mean = mean(data), sd = sd(data))
+  return(out)
+}
+
+normalize_data <- function(data, scaling_factors, reverse = FALSE) {
+  
+  if (reverse) temp <- (data * scaling_factors[2]) + scaling_factors[1]
+  else temp <- (data - scaling_factors[1]) / scaling_factors[2]
+  
+  out <- temp %>% as.matrix()
+  return(out)
+}
+```
+
+**Veri hazırlama**
+
+LSTM verileri 3 boyutlu [samples, timesteps, features] fotmatta alır. Buna uygun olarak aşağıdaki fonksyon ile hazırlayacağız.
+
+Gecikmeleri lag değeri, gelecek tahmin periyodunu da pred değişkenleri ile belirteceğiz.
+
+```{r}
+kerasize_data <- function(data, x = TRUE, lag = 3, pred = 3) {
+  
+  if (x) {
+    
+    temp <- sapply(
+      1:(length(data) - lag - pred + 1)
+      ,function(x) data[x:(x + lag - 1), 1]
+    ) %>% t()
+    
+    out <- array(
+      temp %>% unlist() %>% as.numeric()
+      ,dim = c(nrow(temp), lag, 1)
+    )
+    
+  }  else {
+    
+    temp <- sapply(
+      (1 + lag):(length(data) - pred + 1)
+      ,function(x) data[x:(x + lag - 1), 1]
+    ) %>% t()
+    
+    out <- array(
+      temp %>% unlist() %>% as.numeric()
+      ,dim = c(nrow(temp), pred, 1)
+    )
+    
+  }
+  
+  return(out)
+  
+}
+
+kerasize_pred_input <- function(data, lag = 3, pred = 3){
+  temp <- data[(length(data) - pred + 1):length(data)]
+  temp <- normalize_data(temp, get_scaling_factors(data))
+  out <- array(temp, c(1, lag, 1))
+  return(out)
+}
+```
+
+Model kurmak için gerekli olan fonksiyonumuzu hazırlıyoruz.
+
+-   units: layer sayısı (default=50)
+-   batch - bir yinelemede kullanılacak örnek küme sayısı (default=1)
+-   epochs - kaç yineleme yapılacağı (default = 20)
+-   rate - öğrenme hızı (default=0.5)
+-   seed - random seed (default=2137)
+
+```{r}
+lstm_build_model <- function(x, y, units = 10, batch = 1, epochs = 20, rate = 0.5, seed = 42){
+  
+  lag = dim(x)[2]
+  
+  lstm_model <- keras_model_sequential()
+
+  lstm_model %>%
+    layer_lstm(units = units
+               ,batch_input_shape = c(batch, lag, 1)
+               ,return_sequences = TRUE
+               ,stateful = TRUE) %>%
+    layer_dropout(rate = rate) %>%
+    layer_lstm(units = units
+               ,return_sequences = TRUE
+               ,stateful = TRUE) %>%
+    layer_dropout(rate = rate) %>%
+    time_distributed(layer_dense(units = 1))
+
+  lstm_model %>%
+    compile(loss = 'mae'
+            ,optimizer = 'adam'
+            ,metrics = 'accuracy')
+
+  tensorflow::set_random_seed(seed)
+  lstm_model %>% fit(
+    x = x
+    ,y = y
+    ,batch_size = batch
+    ,epochs = epochs
+    ,verbose = 0
+    ,shuffle = FALSE)
+  
+  out <- list(
+    model = lstm_model
+    ,x = x
+    ,batch = batch
+    ,lag = lag
+    ,pred = dim(y)[2]
+  )
+  return(out)
+
+}
+```
+
+Tahmin yapmak için fonksiyonumuzu hazırlıyoruz.
+
+```{r}
+lstm_forecast <- function(x_test, model, scaling_factors){
+  
+  batch <- model$batch
+  
+  temp <- model$model %>%
+    predict(x_test, batch_size = batch) %>% 
+    .[, , 1] %>%
+    normalize_data(scaling_factors = scaling_factors, reverse = TRUE)
+  
+  out <- list(
+    forecast = temp
+    ,scaling_factors = scaling_factors
+  )
+  
+  return(out)
+  
+}
+```
+
+Elimizdeki veri setinden tarih ve hedef (y) sütunlarını alıyoruz.
+
+```{r}
+data = df[c("ds","y")]
+
+```
+
+Model için veri setimizi hazırlıyoruz.
+
+```{r}
+scaling_factors <- get_scaling_factors(data$y)
+data_normalized <- normalize_data(data$y, scaling_factors)
+
+x_data <- kerasize_data(data_normalized,  x = TRUE)
+y_data <- kerasize_data(data_normalized, x = FALSE)
+x_test <- kerasize_pred_input(data_normalized)
+```
+
+**Model kurma aşaması**
+
+lstm_build_model fonksiyonu ile modeli oluşturup model değişkenine atıyoruz.
+
+```{r}
+model <- lstm_build_model(x_data, y_data)
+```
+
+```{r}
+model
+```
+
+**Öngörü yapma aşaması**
+
+```{r}
+prediction <- lstm_forecast(x_test, model, scaling_factors)
+prediction
+```
+
+Daha sonra karşılaştırmak için hata metriklerini bulalım.
+
+```{r}
+# RMSE değeri: 
+rmse_lstm = sqrt(mean((tail(data$y, n =3) - prediction$forecast)^2))
+# R2 Değeri:
+r2_lstm = (cor((tail(data$y, n =3)) , prediction$forecast)[1])^2 %>% round (4)
+```
+
+## Sonuç Karşılaştırma
+
+```{r echo=FALSE}
+print(paste0("LSTM modelinin RMSE değeri  ", rmse_lstm, " SARIMA modelinin RMSE değeri ise  ", rmse_arima))
+```
+
+```{r echo=FALSE}
+print(paste0("LSTM modelinin R2 değeri  ", r2_lstm, " SARIMA modelinin R2 değeri ise  ", r2_arima))
+```
+
+RMSE değerine baktığımızda SARIMA daha az hatalu tahmin yapmış görünüyor.
+
+LSTM'in R2 değeri daha yüksek ancak bu yanıltıcı, çünkü ortalama bir çizgi çekiyor. Aşağıdaki LSTM tahmin plotuna baktığımızda da ortalama değerlerle kabaca bir tahmin yaptığını görüyoruz.
+
+BU veri ve case için SARIMA(1,1,1)(0,1,1)12 daha uygun görünüyor.
+
+**Seasonal ARIMA Tahminleri**
+
+```{r echo=FALSE}
+# ARIMA TAHMINLERI
+plot(pred_arima)
+```
+
+**LSTM Tahminleri**
+
+```{r echo=FALSE}
+# LSTM TAHMINLERI
+plot(data$ds ,data$y ,type="l",col="blue") # gerçek değerler
+lines(tail(data$ds, n =3) ,prediction$forecast,col="red") # tahminler
+```
+
+#### Kaynaklar:
+
+-   <https://stats.stackexchange.com/questions/445014/how-to-set-p-d-q-and-p-d-q-for-sarima-time-series-model>
+-   <https://autobox.com/pdfs/ARIMA%20FLOW%20CHART.pdf>
+-   <https://online.stat.psu.edu/stat510/lesson/4/4.1>
+-   <https://arauto.readthedocs.io/en/latest/how_to_choose_terms.html>
+-   <https://rpubs.com/pawel-wieczynski/891765>
+-   <http://rwanjohi.rbind.io/2018/04/05/time-series-forecasting-using-lstm-in-r/>
